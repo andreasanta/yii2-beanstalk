@@ -272,83 +272,82 @@ class BeanstalkController extends Controller
     public function beforeAction($action)
     {
         if ($action->id == "index") {
-            try {
-                $this->registerSignalHandler();
-                foreach ($this->getTubes() as $key => $tube) {
-                    $methodName = 'action' . str_replace(' ', '', ucwords(implode(' ', explode('-', $tube))));
-                    if ($this->hasMethod($methodName)) {
-                        $this->tubeActions[$tube] = $methodName;
-                        $this->stdout(Yii::t('udokmeci.beanstalkd', "Listening {tube} tube.",
-                                ["tube" => $tube]) . "\n", Console::FG_GREEN);
-                        $bean = $this->beanstalk->watch($tube);
-                        if (!$bean) {
-                            $this->stderr("Check beanstalkd!" . "\n", Console::FG_RED);
-                        }
-                    } else {
-                        $this->stdout(Yii::t('udokmeci.beanstalkd',
-                                "Not Listening {tube} tube since there is no action defined. {methodName}",
-                                ["tube" => $tube, "methodName" => $methodName]) . "\n", Console::FG_YELLOW);
+            $this->registerSignalHandler();
+            foreach ($this->getTubes() as $key => $tube) {
+                $methodName = 'action' . str_replace(' ', '', ucwords(implode(' ', explode('-', $tube))));
+                if ($this->hasMethod($methodName)) {
+                    $this->tubeActions[$tube] = $methodName;
+                    $this->stdout(Yii::t('udokmeci.beanstalkd', "Listening {tube} tube.",
+                            ["tube" => $tube]) . "\n", Console::FG_GREEN);
+                    $bean = $this->beanstalk->watch($tube);
+                    if (!$bean) {
+                        $this->stderr("Check beanstalkd!" . "\n", Console::FG_RED);
                     }
+                } else {
+                    $this->stdout(Yii::t('udokmeci.beanstalkd',
+                            "Not Listening {tube} tube since there is no action defined. {methodName}",
+                            ["tube" => $tube, "methodName" => $methodName]) . "\n", Console::FG_YELLOW);
                 }
+            }
 
-                if (count($this->tubeActions) == 0) {
-                    $this->stderr(Yii::t('udokmeci.beanstalkd', "No tube found to listen!") . "\n",
-                        Console::FG_RED);
-                    return $this->end(Controller::EXIT_CODE_ERROR);
-                }
+            if (count($this->tubeActions) == 0) {
+                $this->stderr(Yii::t('udokmeci.beanstalkd', "No tube found to listen!") . "\n",
+                    Console::FG_RED);
+                return $this->end(Controller::EXIT_CODE_ERROR);
+            }
 
-                if (isset($bean)) {
-                    while (!$this->_willTerminate) {
-                        try {
-                            if ($this->_lasttimereconnect == null) {
-                                $this->_lasttimereconnect = time();
-                                $this->setDBSessionTimeout();
-                            }
-
-                            if (time() - $this->_lasttimereconnect > 60 * 60) {
-                                $this->getDb()->close();
-                                $this->getDb()->open();
-                                Yii::info(Yii::t('udokmeci.beanstalkd', "Reconnecting to the DB"));
-                                $this->setDBSessionTimeout();
-                                $this->_lasttimereconnect = time();
-                            }
-
-                            $job = $bean->reserve();
-                            if (!$job) {
-                                continue;
-                            }
-
-                            $jobStats = $bean->statsJob($job);
-                            $methodName = $this->getTubeAction($jobStats);
-
-                            if (!$methodName) {
-                                $this->stderr(Yii::t('udokmeci.beanstalkd',
-                                        "No method found for job's tube!") . "\n", Console::FG_RED);
-                                break;
-                            }
-                            $this->_inProgress = true;
-                            $this->trigger(self::EVENT_BEFORE_JOB, new Event);
-                            $this->executeJob($methodName, $job);
-                        } catch (Yii\db\Exception $e) {
-                            if (isset($job)) {
-                                $this->decayJob($job);
-                            }
-                            $this->stderr($e->getMessage() . "\n", Console::FG_RED);
-                            $this->stderr(Yii::t('udokmeci.beanstalkd', 'DB Error job is decaying.') . "\n",
-                                Console::FG_RED);
-                        } catch (Yii\base\ErrorException $e) {
-                            $this->stderr($e->getMessage() . "\n", Console::FG_RED);
+            if (isset($bean)) {
+                while (!$this->_willTerminate) {
+                    try {
+                        if ($this->_lasttimereconnect == null) {
+                            $this->_lasttimereconnect = time();
+                            $this->setDBSessionTimeout();
                         }
-                        $this->_inProgress = false;
+
+                        if (time() - $this->_lasttimereconnect > 60 * 60) {
+                            $this->getDb()->close();
+                            $this->getDb()->open();
+                            Yii::info(Yii::t('udokmeci.beanstalkd', "Reconnecting to the DB"));
+                            $this->setDBSessionTimeout();
+                            $this->_lasttimereconnect = time();
+                        }
+
+                        $job = $bean->reserve();
+                        if (!$job) {
+                            continue;
+                        }
+
+                        $jobStats = $bean->statsJob($job);
+                        $methodName = $this->getTubeAction($jobStats);
+
+                        if (!$methodName) {
+                            $this->stderr(Yii::t('udokmeci.beanstalkd',
+                                    "No method found for job's tube!") . "\n", Console::FG_RED);
+                            break;
+                        }
+                        $this->_inProgress = true;
+                        $this->trigger(self::EVENT_BEFORE_JOB, new Event);
+                        $this->executeJob($methodName, $job);
+                    } catch (Yii\db\Exception $e) {
+                        if (isset($job)) {
+                            $this->decayJob($job);
+                        }
+                        $this->stderr($e->getMessage() . "\n", Console::FG_RED);
+                        $this->stderr(Yii::t('udokmeci.beanstalkd', 'DB Error job is decaying.') . "\n",
+                            Console::FG_RED);
+                    } catch (Yii\base\ErrorException $e) {
+                        $this->stderr($e->getMessage() . "\n", Console::FG_RED);
+                    } catch (ServerException $e) {
                         $this->trigger(self::EVENT_AFTER_JOB, new Event);
-                        if ($this->beanstalk->sleep) {
-                            usleep($this->beanstalk->sleep);
-                        }
+                        $this->stderr($e . "\n", Console::FG_RED);
+                    }
+
+                    $this->_inProgress = false;
+                    $this->trigger(self::EVENT_AFTER_JOB, new Event);
+                    if ($this->beanstalk->sleep) {
+                        usleep($this->beanstalk->sleep);
                     }
                 }
-            } catch (ServerException $e) {
-                $this->trigger(self::EVENT_AFTER_JOB, new Event);
-                $this->stderr($e . "\n", Console::FG_RED);
             }
 
             return $this->end(Controller::EXIT_CODE_NORMAL);
